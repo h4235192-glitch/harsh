@@ -6,6 +6,7 @@ import uuid
 import logging
 import random
 import asyncio
+from aiohttp import web
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from dotenv import load_dotenv
@@ -4183,7 +4184,6 @@ async def send_to_support_group(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception:
             pass
 # =====================================================================
-
 async def main():
     if not BOT_TOKEN:
         logging.error("BOT_TOKEN not found in environment variables!")
@@ -4191,7 +4191,7 @@ async def main():
     
     try:
         init_db()
-        migrate_fix_correct_answer()  # 🟢 ADD THIS LINE
+        migrate_fix_correct_answer()
         
         request_config = HTTPXRequest(
             connect_timeout=35.0,
@@ -4199,8 +4199,7 @@ async def main():
             write_timeout=35.0
         )
         
-        # ... rest of the code ...
-        
+        # ✅ APP INITIALIZATION
         app = (
             Application.builder()
             .token(BOT_TOKEN)
@@ -4270,12 +4269,12 @@ async def main():
                 DIFFICULTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_difficulty)],
                 OPTIONS_COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_options_count)],
                 TIME_LIMIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_time_limit)],
-                NEGATIVE: [CallbackQueryHandler(handle_negative_and_finish, pattern="^neg_")],  # ✅ Callback handler
+                NEGATIVE: [CallbackQueryHandler(handle_negative_and_finish, pattern="^neg_")],
             },
             fallbacks=[CommandHandler("cancel", cancel)],
         )
 
-        # ✅ FIXED: Use 'app' instead of 'application'
+        # ✅ ADD ALL HANDLERS
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("help", help_command))
         app.add_handler(CommandHandler("quizzes", quizzes_command))
@@ -4313,21 +4312,85 @@ async def main():
         app.add_handler(PollAnswerHandler(track_poll_answers))
         app.add_handler(InlineQueryHandler(inline_query_handler))
         
-        # 🚀 BOT RUN/POLLING INITIALIZATION
-        logging.info("Starting Quiz Bot polling...")
+        # ✅ WEBHOOK SETUP FOR RENDER
+        logging.info("🚀 Starting Quiz Bot with Webhook mode...")
+        
+        # Get config
+        webhook_url = os.getenv("WEBHOOK_URL", "").strip()
+        webhook_port = int(os.getenv("PORT", 8080))
+        webhook_path = "/telegram"
+        
+        if not webhook_url:
+            logging.error("❌ WEBHOOK_URL not set in .env! Set it before deploying.")
+            return
+        
+        # Full webhook URL
+        full_webhook_url = f"{webhook_url.rstrip('/')}{webhook_path}"
+        logging.info(f"📡 Webhook URL: {full_webhook_url}")
+        logging.info(f"📡 Listening on port: {webhook_port}")
+        
+        # Initialize bot
         await app.initialize()
+        
+        # Set webhook with Telegram
+        logging.info("🔗 Setting webhook with Telegram...")
+        try:
+            await app.bot.set_webhook(
+                url=full_webhook_url,
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True
+            )
+            logging.info("✅ Webhook set successfully!")
+        except Exception as e:
+            logging.error(f"❌ Failed to set webhook: {e}")
+            return
+        
+        # Start application
         await app.start()
-        await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        
+        # ✅ WEBHOOK HTTP SERVER (aiohttp)
+        async def handle_webhook(request):
+            """Handle incoming Telegram webhook updates"""
+            try:
+                json_data = await request.json()
+                update = Update.de_json(json_data, app.bot)
+                if update:
+                    await app.process_update(update)
+                return web.Response(status=200, text="OK")
+            except Exception as e:
+                logging.error(f"❌ Webhook error: {e}")
+                return web.Response(status=500, text="Error")
+        
+        async def health_check(request):
+            """Health check endpoint for Render"""
+            return web.Response(status=200, text="OK")
+        
+        # Create web app
+        web_app = web.Application()
+        web_app.router.add_post(webhook_path, handle_webhook)
+        web_app.router.add_get("/", health_check)
+        web_app.router.add_get("/health", health_check)
+        
+        # Start web server
+        runner = web.AppRunner(web_app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", webhook_port)
+        await site.start()
+        
+        logging.info(f"✅ HTTP Server started on port {webhook_port}")
+        
+        # Load and schedule autoruns
         await load_autoruns_on_startup(app)
+        
+        # Keep running
+        logging.info("🎯 Bot is running... Press Ctrl+C to stop")
         await asyncio.Event().wait()
-
+        
     except Exception as e:
-        logging.error(f"Critical error in main loop: {e}")
-        
-# 🛑 EXECUTION LOOPS CLOSURE:
-if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logging.info("Bot execution stopped clean.")
-        
+        logging.error(f"❌ Critical error in main loop: {e}", exc_info=True)
+    finally:
+        # Cleanup
+        try:
+            await app.stop()
+        except Exception:
+            pass
