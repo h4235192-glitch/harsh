@@ -7,6 +7,7 @@ import logging
 import random
 import asyncio
 from aiohttp import web
+import sys
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from dotenv import load_dotenv
@@ -4184,14 +4185,18 @@ async def send_to_support_group(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception:
             pass
 # =====================================================================
+
 async def main():
     if not BOT_TOKEN:
-        logging.error("BOT_TOKEN not found in environment variables!")
+        logging.error("❌ BOT_TOKEN not found in environment variables!")
+        print("ERROR: BOT_TOKEN not set", file=sys.stderr)
         return
     
     try:
+        print("✅ Initializing database...", flush=True)
         init_db()
         migrate_fix_correct_answer()
+        print("✅ Database initialized", flush=True)
         
         request_config = HTTPXRequest(
             connect_timeout=35.0,
@@ -4199,7 +4204,7 @@ async def main():
             write_timeout=35.0
         )
         
-        # ✅ APP INITIALIZATION
+        print("✅ Creating application...", flush=True)
         app = (
             Application.builder()
             .token(BOT_TOKEN)
@@ -4208,6 +4213,7 @@ async def main():
         )
         
         # 🔁 CONVERSATION HANDLERS
+        print("✅ Adding conversation handlers...", flush=True)
         new_quiz_handler = ConversationHandler(
             entry_points=[
                 CommandHandler("newquiz", new_quiz_start),
@@ -4261,9 +4267,9 @@ async def main():
                 Q_COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_q_count)],
                 TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_title)],
                 DESCRIPTION: [
-                        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_description),
-                        CommandHandler("skip", handle_description)
-                    ],
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_description),
+                    CommandHandler("skip", handle_description)
+                ],
                 LANGUAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_language)],
                 EXPLANATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_explanation)],
                 DIFFICULTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_difficulty)],
@@ -4274,6 +4280,7 @@ async def main():
             fallbacks=[CommandHandler("cancel", cancel)],
         )
 
+        print("✅ Adding all handlers...", flush=True)
         # ✅ ADD ALL HANDLERS
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("help", help_command))
@@ -4312,27 +4319,41 @@ async def main():
         app.add_handler(PollAnswerHandler(track_poll_answers))
         app.add_handler(InlineQueryHandler(inline_query_handler))
         
+        print("✅ All handlers added", flush=True)
+        
         # ✅ WEBHOOK SETUP FOR RENDER
+        print("🚀 Starting Quiz Bot with Webhook mode...", flush=True)
         logging.info("🚀 Starting Quiz Bot with Webhook mode...")
         
         # Get config
-        webhook_url = os.getenv("WEBHOOK_URL", "").strip()
         webhook_port = int(os.getenv("PORT", 8080))
         webhook_path = "/telegram"
         
-        if not webhook_url:
-            logging.error("❌ WEBHOOK_URL not set in .env! Set it before deploying.")
-            return
+        print(f"PORT from env: {webhook_port}", flush=True)
         
-        # Full webhook URL
+        # 🔥 AUTO-DETECT RENDER EXTERNAL URL
+        render_external_url = os.getenv("RENDER_EXTERNAL_URL", "")
+        
+        if render_external_url:
+            webhook_url = render_external_url
+            print(f"✅ Using RENDER_EXTERNAL_URL: {webhook_url}", flush=True)
+        else:
+            # Fallback for local testing
+            webhook_url = "https://localhost"
+            print(f"⚠️ RENDER_EXTERNAL_URL not found, using fallback: {webhook_url}", flush=True)
+        
         full_webhook_url = f"{webhook_url.rstrip('/')}{webhook_path}"
+        print(f"Full webhook URL: {full_webhook_url}", flush=True)
         logging.info(f"📡 Webhook URL: {full_webhook_url}")
         logging.info(f"📡 Listening on port: {webhook_port}")
         
         # Initialize bot
+        print("✅ Initializing bot...", flush=True)
         await app.initialize()
+        print("✅ Bot initialized", flush=True)
         
         # Set webhook with Telegram
+        print("🔗 Setting webhook with Telegram...", flush=True)
         logging.info("🔗 Setting webhook with Telegram...")
         try:
             await app.bot.set_webhook(
@@ -4340,13 +4361,17 @@ async def main():
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=True
             )
+            print("✅ Webhook set successfully with Telegram!", flush=True)
             logging.info("✅ Webhook set successfully!")
         except Exception as e:
-            logging.error(f"❌ Failed to set webhook: {e}")
+            print(f"❌ Failed to set webhook: {e}", file=sys.stderr, flush=True)
+            logging.error(f"❌ Failed to set webhook: {e}", exc_info=True)
             return
         
         # Start application
+        print("✅ Starting application...", flush=True)
         await app.start()
+        print("✅ Application started", flush=True)
         
         # ✅ WEBHOOK HTTP SERVER (aiohttp)
         async def handle_webhook(request):
@@ -4358,7 +4383,7 @@ async def main():
                     await app.process_update(update)
                 return web.Response(status=200, text="OK")
             except Exception as e:
-                logging.error(f"❌ Webhook error: {e}")
+                logging.error(f"❌ Webhook error: {e}", exc_info=True)
                 return web.Response(status=500, text="Error")
         
         async def health_check(request):
@@ -4366,31 +4391,54 @@ async def main():
             return web.Response(status=200, text="OK")
         
         # Create web app
+        print("🌐 Creating web app...", flush=True)
         web_app = web.Application()
         web_app.router.add_post(webhook_path, handle_webhook)
         web_app.router.add_get("/", health_check)
         web_app.router.add_get("/health", health_check)
         
         # Start web server
+        print(f"🚀 Starting HTTP server on 0.0.0.0:{webhook_port}...", flush=True)
         runner = web.AppRunner(web_app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", webhook_port)
         await site.start()
         
+        print(f"✅ HTTP Server started on port {webhook_port}", flush=True)
         logging.info(f"✅ HTTP Server started on port {webhook_port}")
         
         # Load and schedule autoruns
+        print("📅 Loading autoruns...", flush=True)
         await load_autoruns_on_startup(app)
+        print("✅ Autoruns loaded", flush=True)
         
         # Keep running
+        print("🎯 Bot is running and listening for webhook updates!", flush=True)
         logging.info("🎯 Bot is running... Press Ctrl+C to stop")
         await asyncio.Event().wait()
         
     except Exception as e:
+        print(f"❌ CRITICAL ERROR: {e}", file=sys.stderr, flush=True)
         logging.error(f"❌ Critical error in main loop: {e}", exc_info=True)
+        import traceback
+        traceback.print_exc()
     finally:
         # Cleanup
         try:
             await app.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            logging.error(f"Error stopping app: {e}")
+
+
+if __name__ == '__main__':
+    print("🤖 Starting Telegram Quiz Bot...", flush=True)
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("Bot execution stopped.", flush=True)
+        logging.info("Bot execution stopped clean.")
+    except Exception as e:
+        print(f"❌ Fatal error: {e}", file=sys.stderr, flush=True)
+        logging.error(f"Fatal error: {e}", exc_info=True)
+        import traceback
+        traceback.print_exc()
